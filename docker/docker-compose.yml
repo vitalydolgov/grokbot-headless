@@ -1,19 +1,44 @@
-# grokbot-headless audit / version-compat only.
-# Usage (from repo root): docker compose -f docker/docker-compose.yml run --rm audit
-# Requires Docker on the machine that builds; do not use this to deploy to Pi/Mac.
+# grokbot-headless: isolated upstream audit + optional fork compat.
+# Usage (from repo root):
+#   sudo docker compose -f docker/docker-compose.yml build audit-upstream
+#   sudo docker compose -f docker/docker-compose.yml run --rm audit-upstream
+# Does NOT deploy to Pi/Mac. Does NOT implement routing.
 services:
-  audit:
+  # Fresh git clone of andreanjos/main baked into the image at /src/upstream.
+  # Host reports dir is mounted so findings land where Net can read them.
+  audit-upstream:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: grokbot-headless-audit:local
+      target: audit-upstream
+      args:
+        UPSTREAM_REPO: https://github.com/andreanjos/grokbot-headless.git
+        UPSTREAM_REF: main
+    image: grokbot-headless-audit-upstream:local
+    working_dir: /src/upstream
+    volumes:
+      - ../../gorod-reports:/out/reports:rw
+      # Optional: host fork for side-by-side diff only (read-only).
+      - ..:/src/fork:ro
+    environment:
+      AUDIT_UPSTREAM_DIR: /src/upstream
+      AUDIT_FORK_DIR: /src/fork
+      AUDIT_REPORT_DIR: /out/reports
+    # Override at run time with an audit script or interactive shell.
+    command: ["bash", "-lc", "echo UPSTREAM=$$(cat /src/upstream.COMMIT); cat /src/upstream.LOG; ls -la"]
+
+  # Unit tests / check --local against host fork + optional official package tree.
+  audit-compat:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: audit-compat
+    image: grokbot-headless-audit-compat:local
     working_dir: /opt/grokbot-headless
     volumes:
-      # Live repo mount (preferred for iterative audit)
       - ..:/opt/grokbot-headless:rw
-      # Optional: unpacked or installed official Linux package tree
-      # e.g. deb-amd64/data/opt/Grok Bot  ->  /opt/grok-bot-official
       - ../../grokbot-headless-research/deb-amd64/data/opt/Grok Bot:/opt/grok-bot-official:ro
+      - ../../gorod-reports:/out/reports:rw
       - headless-data:/data
     environment:
       GROK_BOT_BINARY: /opt/grok-bot-official/grok-bot
@@ -21,9 +46,6 @@ services:
       GROK_BOT_PACKAGE_JSON: /opt/grok-bot-official/resources/app.asar/package.json
       GROK_BOT_HEADLESS_CONFIG_DIR: /data/config
       SAND_DATA_ROOT: /data/share
-    # Foreground tests by default. Override to:
-    #   node grok-bot-headless.mjs check --local
-    #   node grok-bot-headless.mjs run   (needs login credentials in /data/config)
     command: ["node", "--test", "test/controller.test.mjs", "test/cli.test.mjs"]
 
 volumes:
