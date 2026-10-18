@@ -19,7 +19,7 @@ import {
 import { access, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir, hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const localRequire = createRequire(import.meta.url);
@@ -53,6 +53,7 @@ const DAEMON_CONTAINER_PATH = DAEMON_SCRIPT.includes('.asar/')
   : DAEMON_SCRIPT;
 const PACKAGE_JSON_PATH = process.env.GROK_BOT_PACKAGE_JSON || join(dirname(APP_BINARY), 'resources', 'app.asar', 'package.json');
 const TESTED_CLIENT_VERSIONS = Object.freeze(['0.30.0', '0.66.0']);
+const NODE_BINARY = process.env.GROK_BOT_NODE_BINARY || process.env.SAND_NODE_BINARY || process.execPath;
 const POLICIES = Object.freeze(['always', 'ask', 'never']);
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const DESCRIPTOR_REFRESH_MS = 60 * 1000;
@@ -206,20 +207,25 @@ const heartbeat = () => atomicJson(HEARTBEAT_PATH, { pid: process.pid, at: Date.
 
 // --- Official application ----------------------------------------------------
 
-function appNode(code) {
-  return execFileSync(APP_BINARY, ['-e', code], {
-    encoding: 'utf8',
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: SUBPROCESS_TIMEOUT_MS,
-  });
-}
-
 function asarVirtualPath(path) {
   const marker = '.asar/';
   const index = path.indexOf(marker);
   if (index === -1) return null;
   return { archive: `${path.slice(0, index)}.asar`, entry: path.slice(index + marker.length) };
+}
+
+function assertSafeAsarEntry(entry) {
+  const parts = String(entry).split('/');
+  if (
+    entry == null
+    || entry === ''
+    || entry.includes('\0')
+    || entry.startsWith('/')
+    || parts.some((part) => part === '' || part === '.' || part === '..')
+  ) {
+    throw new Error(`Unsafe asar entry path: ${entry}`);
+  }
+  return entry;
 }
 
 function readExact(fd, length, position) {
@@ -233,10 +239,15 @@ function readExact(fd, length, position) {
   return buffer;
 }
 
+const ASAR_HEADER_JSON_MAX = 16 * 1024 * 1024;
+
 function loadAsarHeader(archive) {
   const fd = openSync(archive, 'r');
   try {
     const jsonSize = readExact(fd, 16, 0).readUInt32LE(12);
+    if (jsonSize <= 0 || jsonSize > ASAR_HEADER_JSON_MAX) {
+      throw new Error(`Unsupported asar header size: ${jsonSize}`);
+    }
     return { fd, jsonSize, header: JSON.parse(readExact(fd, jsonSize, 16)) };
   } catch (error) {
     closeSync(fd);
@@ -276,6 +287,7 @@ function readPackageVersion(path) {
 function resolveDaemonEntry(script = DAEMON_SCRIPT) {
   const virtual = asarVirtualPath(script);
   if (virtual) {
+    assertSafeAsarEntry(virtual.entry);
     const { fd, header } = loadAsarHeader(virtual.archive);
     try {
       if (!asarLookup(header, virtual.entry)) {
@@ -343,9 +355,14 @@ function unpackedDepsPath(archive) {
 function prepareDaemonLaunch(script = DAEMON_SCRIPT, extractRoot = join(DATA_ROOT, 'extracted-client')) {
   const virtual = asarVirtualPath(script);
   if (!virtual) return localRequire.resolve(script);
-  resolveDaemonEntry(script);
-  const dest = join(extractRoot, virtual.entry);
-  writeExtractedFile(dest, readAsarFile(virtual.archive, virtual.entry));
+  const entry = resolveDaemonEntry(script);
+  assertSafeAsarEntry(entry);
+  const root = resolve(extractRoot);
+  const dest = resolve(root, entry);
+  if (dest !== root && !dest.startsWith(`${root}/`)) {
+    throw new Error(`Refusing to extract daemon outside ${root}`);
+  }
+  writeExtractedFile(dest, readAsarFile(virtual.archive, entry));
   const unpackedDeps = unpackedDepsPath(virtual.archive);
   if (existsSync(unpackedDeps)) ensureSymlink(unpackedDeps, join(extractRoot, 'dist', 'deps'));
   return dest;
@@ -365,7 +382,7 @@ function daemonLaunchEnv({ dataRoot = DATA_ROOT, clientAppVersion = clientVersio
 function spawnDaemon(machineId, options = {}) {
   const script = options.script ?? prepareDaemonLaunch(options.daemonScript, options.extractRoot);
   const child = fork(script, [], {
-    execPath: process.execPath,
+    execPath: options.execPath ?? NODE_BINARY,
     env: options.env ?? daemonLaunchEnv(options),
     stdio: options.stdio ?? ['ignore', 'inherit', 'inherit', 'ipc'],
   });
@@ -536,16 +553,66 @@ async function login() {
   throw new Error('OAuth sign-in timed out');
 }
 
+
+function assertNodeRuntime() {
+  // Grok Bot 0.71.x local-exec-daemon imports node:sqlite (Node >= 22).
+  // Probe the binary that will fork the daemon (may differ from the CLI Node).
+  let version = process.version.replace(/^v/, '');
+  if (NODE_BINARY === process.execPath) {
+    try {
+      localRequire('node:sqlite');
+    } catch (error) {
+      throw new Error(
+        `Node ${process.version} cannot load node:sqlite (required by Grok Bot >= 0.71 local-exec-daemon). Use Node.js 22+ or set GROK_BOT_NODE_BINARY / SAND_NODE_BINARY to a Node 22+ binary.`,
+        { cause: error },
+      );
+    }
+  } else {
+    try {
+      const probe = execFileSync(
+        NODE_BINARY,
+        ['-e', "require('node:sqlite'); process.stdout.write(process.version)"],
+        { encoding: 'utf8', timeout: SUBPROCESS_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      ).trim();
+      version = probe.replace(/^v/, '');
+    } catch (error) {
+      throw new Error(
+        `Daemon Node binary ${NODE_BINARY} cannot load node:sqlite (required by Grok Bot >= 0.71). Use Node.js 22+.`,
+        { cause: error },
+      );
+    }
+  }
+  return {
+    nodeVersion: version,
+    nodeBinary: NODE_BINARY,
+    sqlite: 'available',
+  };
+}
+
+function needsNodeSqlite(version) {
+  const [major, minor] = String(version).split('.').map((part) => Number.parseInt(part, 10));
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return true;
+  return major > 0 || minor >= 71;
+}
+
 async function localCompatibility() {
   await assertAppInstalled();
   probeDaemonEntry();
   const version = installedVersion();
   if (!version) throw new Error('Cannot read the installed Grok Bot version');
+  const runtime = needsNodeSqlite(version)
+    ? assertNodeRuntime()
+    : {
+      nodeVersion: process.version.replace(/^v/, ''),
+      nodeBinary: NODE_BINARY,
+      sqlite: 'not-required',
+    };
   return {
     compatible: true,
     installedVersion: version,
     testedVersion: isTestedClientVersion(version),
     daemonEntryPoint: 'verified',
+    nodeRuntime: runtime,
   };
 }
 
@@ -556,7 +623,7 @@ async function check(localOnly) {
 }
 
 async function run() {
-  await assertAppInstalled();
+  await localCompatibility();
   await mkdir(DATA_ROOT, { recursive: true, mode: 0o700 });
   const identity = await machineIdentity();
   let stopping = false;
@@ -691,6 +758,8 @@ export {
   cursorChecksum,
   daemonLaunchEnv,
   hasCredentialShape,
+  assertNodeRuntime,
+  assertSafeAsarEntry,
   isTestedClientVersion,
   jwtPayload,
   prepareDaemonLaunch,

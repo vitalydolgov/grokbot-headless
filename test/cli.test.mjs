@@ -153,7 +153,10 @@ test('the CLI drives the whole lifecycle against a fake backend and daemon', asy
 
     await t.test('check refreshes an expiring token and mints both runtime credentials', async () => {
       const { stdout } = await cli('check');
-      assert.deepEqual(JSON.parse(stdout), {
+      const checkReport = JSON.parse(stdout);
+      assert.ok(['available', 'not-required'].includes(checkReport.nodeRuntime?.sqlite));
+      delete checkReport.nodeRuntime;
+      assert.deepEqual(checkReport, {
         compatible: true,
         installedVersion: '0.30.0',
         testedVersion: true,

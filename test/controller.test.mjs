@@ -24,6 +24,7 @@ import {
   cursorChecksum,
   daemonLaunchEnv,
   hasCredentialShape,
+  assertSafeAsarEntry,
   isTestedClientVersion,
   jwtPayload,
   prepareDaemonLaunch,
@@ -181,6 +182,14 @@ test('compatibility metadata identifies tested client versions', () => {
   assert.equal(isTestedClientVersion('99.0.0'), false);
 });
 
+test('asar entry paths reject traversal and absolute segments', () => {
+  assert.equal(assertSafeAsarEntry('dist/local-exec-daemon/main.cjs'), 'dist/local-exec-daemon/main.cjs');
+  for (const bad of ['../x', 'a/../b', '/abs', 'a//b', '', 'a/./b', 'x\0y']) {
+    assert.throws(() => assertSafeAsarEntry(bad), /Unsafe asar entry path/);
+  }
+});
+
+
 test('0.66.0 resolves dist/local-exec-daemon/main.cjs from the asar', () => {
   const directory = mkdtempSync(join(tmpdir(), 'grok-bot-066-'));
   try {
@@ -209,13 +218,18 @@ test('0.66.0 resolves dist/local-exec-daemon/main.cjs from the asar', () => {
         GROK_BOT_PACKAGE_JSON: `${archive}/package.json`,
       },
     });
-    assert.deepEqual(JSON.parse(output), {
-      compatible: true,
-      installedVersion: '0.66.0',
-      testedVersion: true,
-      daemonEntryPoint: 'verified',
-      authentication: 'skipped',
-    });
+    {
+      const report = JSON.parse(output);
+      assert.ok(['available', 'not-required'].includes(report.nodeRuntime?.sqlite));
+      delete report.nodeRuntime;
+      assert.deepEqual(report, {
+        compatible: true,
+        installedVersion: '0.66.0',
+        testedVersion: true,
+        daemonEntryPoint: 'verified',
+        authentication: 'skipped',
+      });
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -249,13 +263,18 @@ test('0.66.0 version payload that starts with > then { still parses', () => {
         GROK_BOT_PACKAGE_JSON: `${archive}/package.json`,
       },
     });
-    assert.deepEqual(JSON.parse(output), {
-      compatible: true,
-      installedVersion: '0.66.0',
-      testedVersion: true,
-      daemonEntryPoint: 'verified',
-      authentication: 'skipped',
-    });
+    {
+      const report = JSON.parse(output);
+      assert.ok(['available', 'not-required'].includes(report.nodeRuntime?.sqlite));
+      delete report.nodeRuntime;
+      assert.deepEqual(report, {
+        compatible: true,
+        installedVersion: '0.66.0',
+        testedVersion: true,
+        daemonEntryPoint: 'verified',
+        authentication: 'skipped',
+      });
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
