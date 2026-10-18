@@ -1,0 +1,30 @@
+# grokbot-headless audit / version-compat only.
+# Usage (from repo root): docker compose -f docker/docker-compose.yml run --rm audit
+# Requires Docker on the machine that builds; do not use this to deploy to Pi/Mac.
+services:
+  audit:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: grokbot-headless-audit:local
+    working_dir: /opt/grokbot-headless
+    volumes:
+      # Live repo mount (preferred for iterative audit)
+      - ..:/opt/grokbot-headless:rw
+      # Optional: unpacked or installed official Linux package tree
+      # e.g. deb-amd64/data/opt/Grok Bot  ->  /opt/grok-bot-official
+      - ../../grokbot-headless-research/deb-amd64/data/opt/Grok Bot:/opt/grok-bot-official:ro
+      - headless-data:/data
+    environment:
+      GROK_BOT_BINARY: /opt/grok-bot-official/grok-bot
+      GROK_BOT_DAEMON_SCRIPT: /opt/grok-bot-official/resources/app.asar/dist/local-exec-daemon/main.cjs
+      GROK_BOT_PACKAGE_JSON: /opt/grok-bot-official/resources/app.asar/package.json
+      GROK_BOT_HEADLESS_CONFIG_DIR: /data/config
+      SAND_DATA_ROOT: /data/share
+    # Foreground tests by default. Override to:
+    #   node grok-bot-headless.mjs check --local
+    #   node grok-bot-headless.mjs run   (needs login credentials in /data/config)
+    command: ["node", "--test", "test/controller.test.mjs", "test/cli.test.mjs"]
+
+volumes:
+  headless-data:
