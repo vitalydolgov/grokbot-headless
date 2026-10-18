@@ -23,6 +23,9 @@ if (( node_major < 20 )); then
   printf 'Error: Node.js 20 or newer is required; found %s.\n' "$(node --version)" >&2
   exit 1
 fi
+if (( node_major < 22 )); then
+  printf 'Warning: Node.js 22+ is required to run Grok Bot >= 0.71 (node:sqlite). Found %s. Set GROK_BOT_NODE_BINARY if needed.\n' "$(node --version)" >&2
+fi
 printf 'Checking Grok Bot compatibility...\n'
 if ! GROK_BOT_BINARY="$app_bin" GROK_BOT_DAEMON_SCRIPT="$daemon_script" \
   node "$repo_dir/grok-bot-headless.mjs" check --local; then

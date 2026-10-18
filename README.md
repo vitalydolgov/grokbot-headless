@@ -82,7 +82,7 @@ Linux user account
 ## Requirements
 
 - Linux
-- Node.js 20 or newer
+- Node.js 22 or newer (0.71.x local-exec-daemon needs the built-in `node:sqlite` module)
 - systemd user services
 - the official Grok Bot Linux application
 - a Grok Bot account with local-computer access
@@ -93,7 +93,11 @@ The default application location is:
 /opt/Grok Bot
 ```
 
-The current compatibility data lists the official Grok Bot Linux packages `0.30.0` and `0.66.0` as tested. A different version can still work if all structural and remote protocol checks pass.
+The current compatibility data lists the official Grok Bot Linux packages `0.30.0`, `0.66.0`, and `0.71.2` as tested. A different version can still work if all structural and remote protocol checks pass.
+
+`ELECTRON_RUN_AS_NODE=1` is ignored on current Linux packages (verified against `0.71.2`): the Electron binary starts the full app instead of evaluating `-e` / forking the daemon. The controller therefore extracts `dist/local-exec-daemon/main.cjs` from `app.asar` and launches it under system Node.
+
+This controller does **not** implement Settings → Computer → **Route traffic through this computer** (the desktop reverse-tunnel / CONNECT dialer). That path lives in the Electron main process (`sand-egress-tunnel` client → box WS `:8790` / CONNECT `:8791`), not in `local-exec-daemon`.
 
 ## Quick start
 

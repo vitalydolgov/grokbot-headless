@@ -179,6 +179,7 @@ test('cursorChecksum matches the Grok Bot byte transform', () => {
 test('compatibility metadata identifies tested client versions', () => {
   assert.equal(isTestedClientVersion('0.30.0'), true);
   assert.equal(isTestedClientVersion('0.66.0'), true);
+  assert.equal(isTestedClientVersion('0.71.2'), true);
   assert.equal(isTestedClientVersion('99.0.0'), false);
 });
 

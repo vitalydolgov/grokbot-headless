@@ -52,7 +52,7 @@ const DAEMON_CONTAINER_PATH = DAEMON_SCRIPT.includes('.asar/')
   ? `${DAEMON_SCRIPT.slice(0, DAEMON_SCRIPT.indexOf('.asar/'))}.asar`
   : DAEMON_SCRIPT;
 const PACKAGE_JSON_PATH = process.env.GROK_BOT_PACKAGE_JSON || join(dirname(APP_BINARY), 'resources', 'app.asar', 'package.json');
-const TESTED_CLIENT_VERSIONS = Object.freeze(['0.30.0', '0.66.0']);
+const TESTED_CLIENT_VERSIONS = Object.freeze(['0.30.0', '0.66.0', '0.71.2']);
 const NODE_BINARY = process.env.GROK_BOT_NODE_BINARY || process.env.SAND_NODE_BINARY || process.execPath;
 const POLICIES = Object.freeze(['always', 'ask', 'never']);
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;

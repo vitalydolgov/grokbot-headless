@@ -13,6 +13,6 @@
     "grok-bot-headless": "./grok-bot-headless.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }
