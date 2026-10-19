@@ -77,6 +77,7 @@ Linux user account
 - a local chat user interface
 - root access
 - automatic approval of local actions unless you select `policy always`
+- OS / Pi VPN or split-tunnel routing (only the reverse-tunnel dialer client)
 - a guarantee that future internal protocols will remain compatible
 
 ## Requirements
@@ -97,7 +98,29 @@ The current compatibility data lists the official Grok Bot Linux packages `0.30.
 
 `ELECTRON_RUN_AS_NODE=1` is ignored on current Linux packages (verified against `0.71.2`): the Electron binary starts the full app instead of evaluating `-e` / forking the daemon. The controller therefore extracts `dist/local-exec-daemon/main.cjs` from `app.asar` and launches it under system Node.
 
-This controller does **not** implement Settings → Computer → **Route traffic through this computer** (the desktop reverse-tunnel / CONNECT dialer). That path lives in the Electron main process (`sand-egress-tunnel` client → box WS `:8790` / CONNECT `:8791`), not in `local-exec-daemon`.
+### Reverse tunnel (optional dialer)
+
+This controller can run a **standalone reverse-tunnel dialer** that mirrors Settings → Computer → **Route traffic through this computer**:
+
+- dials the box reverse-tunnel WebSocket on **:8790**
+- participates in the CONNECT mux so the box local CONNECT proxy **127.0.0.1:8791** can exit through this host
+- this host is the **dialer/exit**; Pi VPN / OS split routing is **out of scope**
+
+```bash
+# Tunnel only (foreground). Discovers gateway via EnsureSandBox after login.
+grok-bot-headless tunnel start
+
+# Or compose with local-exec supervision:
+grok-bot-headless run --tunnel
+
+# Explicit URL/token (tests / dry-run; no live box required for unit tests):
+GROK_BOT_TUNNEL_URL='wss://…:8790/' GROK_BOT_TUNNEL_TOKEN='…' \
+  grok-bot-headless tunnel start --no-discover --url "$GROK_BOT_TUNNEL_URL" --token "$GROK_BOT_TUNNEL_TOKEN"
+```
+
+Default attach mode is **`if-free`** (stand by if another computer holds the tunnel). Pass **`--claim`** only when you intentionally contest ownership — do not fight a signed-in Mac blindly. Private destinations (RFC1918/loopback) are refused unless `--allow-private` or `GROK_BOT_TUNNEL_ALLOW_PRIVATE=1`. Prefer **`policy ask`** for local-exec; tunnel ownership is separate from execution policy.
+
+Protocol details: see `docs` notes in the companion routing design report when present; process/env names may still say `sand-egress-*`.
 
 ## Quick start
 
@@ -180,6 +203,15 @@ systemctl --user restart grok-bot-headless
 > `policy always` lets Grok Bot run commands and access files as your Linux user without an individual prompt. If that user has passwordless `sudo`, a remote command can also gain root access.
 
 ## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `login` | Browser-link OAuth |
+| `policy <ask\|always\|never>` | Register machine + local-exec permission (prefer `ask`) |
+| `run [--tunnel] [--claim]` | Supervise local-exec; optional reverse-tunnel dialer |
+| `tunnel start\|status\|stop` | Reverse-tunnel dialer only |
+| `status` / `check` / `logout` | Lifecycle |
+
 
 | Command | Purpose |
 | --- | --- |

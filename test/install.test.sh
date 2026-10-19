@@ -66,6 +66,8 @@ env -u DISPLAY \
 
 test -x "$home_dir/.local/bin/grok-bot-headless"
 test -x "$home_dir/.local/lib/grok-bot-headless/grok-bot-headless.mjs"
+test -f "$home_dir/.local/lib/grok-bot-headless/lib/reverse-tunnel.mjs"
+test -d "$home_dir/.local/lib/grok-bot-headless/node_modules/ws"
 test -f "$home_dir/.config/systemd/user/grok-bot-headless.service"
 test "$(stat -c '%a' "$home_dir/.config/grok-bot-headless/environment")" = 600
 test "$(stat -c '%a' "$home_dir/.config/grok-bot-headless")" = 700

@@ -18,3 +18,11 @@ Before you share logs, remove authorization headers, OAuth values, credential fi
 ## Review note
 
 A third-party security review of this tree (auth, credentials, install/systemd, network, IPC, policy defaults, path handling) was performed 2026-10-19 for a local fork update. Findings and residual risks for operators are summarized in the companion report outside this repo when available; upstream maintainers should treat any such review as advisory, not a certification.
+
+## Reverse tunnel / CONNECT dialer
+
+- The headless reverse-tunnel client reuses account OAuth to call `EnsureSandBox` for `gatewayUrl` / `gatewayToken` (or operator-supplied `GROK_BOT_TUNNEL_*`). Tokens are not printed by `status`.
+- Only **one** dialer should hold the box tunnel. Default attach is `if-free`; `--claim` contests ownership and can displace another computer (including a Mac with Settings → Route traffic enabled). Coordinate operators before claiming.
+- Private/link-local destinations are refused by default (`allowPrivateTargets: false`). Do not enable `--allow-private` unless you understand SSRF/lateral-movement risk from box-originated CONNECTs.
+- This path does **not** weaken local-exec Auto-review or execution policy. Prefer `policy ask`.
+- Unit tests use a **fake** WS peer only; do not point CI at a live box.

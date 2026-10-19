@@ -237,6 +237,7 @@ test('the CLI drives the whole lifecycle against a fake backend and daemon', asy
           localToolPermission: 'always',
           credentialExpiresAtMs: 9_000_000_000_000,
           dataRoot,
+          reverseTunnel: { state: 'off' },
         });
 
         process.kill(discovery.pid, 'SIGKILL');

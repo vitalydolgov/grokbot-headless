@@ -22,6 +22,13 @@ import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import {
+  ReverseTunnelClient,
+  tunnelClientId,
+  tunnelConfigFromBox,
+} from './lib/reverse-tunnel.mjs';
+import { createTunnelCommands } from './lib/tunnel-cli.mjs';
+
 const localRequire = createRequire(import.meta.url);
 
 // --- Configuration -----------------------------------------------------------
@@ -45,6 +52,7 @@ const DAEMON_CREDENTIAL_PATH = join(DATA_ROOT, 'local-exec-daemon-credential.jso
 const HEARTBEAT_PATH = join(DATA_ROOT, 'local-exec-supervisor.json');
 const DISCOVERY_PATH = join(DATA_ROOT, 'local-exec-daemon.json');
 const SETTINGS_PATH = join(DATA_ROOT, 'settings.json');
+const TUNNEL_STATE_PATH = join(DATA_ROOT, 'reverse-tunnel.json');
 const APP_BINARY = process.env.GROK_BOT_BINARY || '/opt/Grok Bot/grok-bot';
 const DAEMON_ENTRY_POINT = 'dist/local-exec-daemon/main.cjs';
 const DAEMON_SCRIPT = process.env.GROK_BOT_DAEMON_SCRIPT || join(dirname(APP_BINARY), 'resources', 'app.asar', DAEMON_ENTRY_POINT);
@@ -622,12 +630,75 @@ async function check(localOnly) {
   printJson({ ...report, authentication: localOnly ? 'skipped' : 'verified' });
 }
 
-async function run() {
+async function startInProcessTunnel({ identity, claim = false }) {
+  const envUrl = process.env.GROK_BOT_TUNNEL_URL;
+  const envToken = process.env.GROK_BOT_TUNNEL_TOKEN;
+  let url;
+  let bearer;
+  let headers = {};
+  if (envUrl && envToken) {
+    url = envUrl.startsWith('ws') ? envUrl : (tunnelConfigFromBox({ gatewayUrl: envUrl, gatewayToken: envToken })?.url);
+    bearer = envToken;
+    if (!url) throw new Error('GROK_BOT_TUNNEL_URL is not a valid gateway/WS URL');
+  } else {
+    const box = await connectUnary(
+      'aiserver.v1.SandBoxService',
+      'EnsureSandBox',
+      { wake: true, supportsAsleepBox: true },
+      await loadCredentials(),
+      identity.machineId,
+    );
+    const config = tunnelConfigFromBox(box);
+    if (config == null) {
+      throw new Error('EnsureSandBox did not return gatewayUrl/gatewayToken for reverse tunnel');
+    }
+    url = config.url;
+    bearer = config.bearer;
+    headers = config.headers;
+    if (box.egressTunnelOwnership === true && !claim) {
+      process.stderr.write(
+        'warning: box reports another dialer may hold the tunnel; using if-free (pass --claim to contest).\n',
+      );
+    }
+  }
+
+  const client = new ReverseTunnelClient({
+    url,
+    bearer,
+    headers,
+    clientId: tunnelClientId(identity.machineId),
+    mode: claim ? 'claim' : 'if-free',
+    allowPrivateTargets: process.env.GROK_BOT_TUNNEL_ALLOW_PRIVATE === '1',
+    log: (msg) => process.stderr.write(`${msg}\n`),
+    onStatus: (status) => {
+      void atomicJson(TUNNEL_STATE_PATH, {
+        state: status.state,
+        mode: status.mode,
+        confirmed: status.confirmed,
+        attachGen: status.attachGen,
+        relayedStreams: status.relayedStreams,
+        activeStreams: status.activeStreams,
+        lastError: status.lastError || null,
+        pid: process.pid,
+        machineId: identity.machineId,
+        updatedAtMs: Date.now(),
+      });
+    },
+  });
+  await client.start();
+  await client.waitForConfirm(30_000);
+  process.stdout.write(`Reverse-tunnel dialer attached (${claim ? 'claim' : 'if-free'}).\n`);
+  return client;
+}
+
+async function run(options = {}) {
   await localCompatibility();
   await mkdir(DATA_ROOT, { recursive: true, mode: 0o700 });
   const identity = await machineIdentity();
   let stopping = false;
   let daemon;
+  /** @type {import('./lib/reverse-tunnel.mjs').ReverseTunnelClient | null} */
+  let tunnelClient = null;
 
   const renewCredentials = async () => mintDescriptor(identity, await loadCredentials());
 
@@ -654,24 +725,34 @@ async function run() {
   const stop = async (signal) => {
     if (stopping) return;
     stopping = true;
+    tunnelClient?.stop();
     await terminate(daemon);
     await rm(HEARTBEAT_PATH, { force: true });
+    await rm(TUNNEL_STATE_PATH, { force: true });
     process.exit(signal === 'SIGINT' ? 130 : 0);
   };
 
   await renewCredentials();
   await heartbeat();
   daemon = startDaemon();
+
+  if (options.tunnel) {
+    tunnelClient = await startInProcessTunnel({ identity, claim: options.tunnelClaim === true });
+  }
+
   void repeat(HEARTBEAT_MS, 'heartbeat', heartbeat);
   void repeat(DESCRIPTOR_REFRESH_MS, 'credential refresh', renewCredentials);
   process.on('SIGINT', () => void stop('SIGINT'));
   process.on('SIGTERM', () => void stop('SIGTERM'));
   process.stdout.write(`Native Grok Bot node started: ${identity.label} (${identity.machineId})\n`);
+  if (options.tunnel) {
+    process.stdout.write('Composition: local-exec + reverse-tunnel.\n');
+  }
 }
 
 async function status() {
-  const [identity, discovery, descriptor, settings] = await Promise.all(
-    [MACHINE_PATH, DISCOVERY_PATH, DAEMON_CREDENTIAL_PATH, SETTINGS_PATH].map((path) => readJson(path)),
+  const [identity, discovery, descriptor, settings, tunnel] = await Promise.all(
+    [MACHINE_PATH, DISCOVERY_PATH, DAEMON_CREDENTIAL_PATH, SETTINGS_PATH, TUNNEL_STATE_PATH].map((path) => readJson(path)),
   );
   printJson({
     label: identity?.label || hostname(),
@@ -681,6 +762,16 @@ async function status() {
     localToolPermission: settings?.localToolPermission || 'ask',
     credentialExpiresAtMs: descriptor?.userComputer?.expiresAtMs || descriptor?.expiresAtMs || null,
     dataRoot: DATA_ROOT,
+    reverseTunnel: tunnel
+      ? {
+          state: tunnel.state || null,
+          confirmed: tunnel.confirmed === true,
+          mode: tunnel.mode || null,
+          activeStreams: tunnel.activeStreams ?? null,
+          relayedStreams: tunnel.relayedStreams ?? null,
+          pidAlive: typeof tunnel.pid === 'number' ? processAlive(tunnel.pid) : false,
+        }
+      : { state: 'off' },
   });
 }
 
@@ -718,18 +809,46 @@ async function logout() {
 
 // --- Entry point -------------------------------------------------------------
 
-async function main(command, option) {
+const tunnelCommands = createTunnelCommands({
+  machineIdentity,
+  loadCredentials,
+  connectUnary,
+  atomicJson,
+  readJson,
+  rm,
+  mkdir,
+  dataRoot: DATA_ROOT,
+  tunnelStatePath: TUNNEL_STATE_PATH,
+  describeError,
+  printJson,
+  sleep,
+  processAlive,
+});
+
+async function runWithOptionalTunnel(argv) {
+  const flags = argv.filter(Boolean);
+  const withTunnel = flags.includes('--tunnel');
+  const claim = flags.includes('--claim');
+  const unknown = flags.filter((f) => f !== '--tunnel' && f !== '--claim');
+  if (unknown.length > 0) {
+    throw new Error(`Usage: ${CLI_NAME} run [--tunnel] [--claim]`);
+  }
+  return run({ tunnel: withTunnel, tunnelClaim: claim });
+}
+
+async function main(command, option, ...rest) {
   switch (command) {
     case 'login': return login();
-    case 'run': return run();
+    case 'run': return runWithOptionalTunnel([option, ...rest].filter((v) => v !== undefined));
     case 'status': return status();
     case 'check':
       if (option !== undefined && option !== '--local') throw new Error(`Usage: ${CLI_NAME} check [--local]`);
       return check(option === '--local');
     case 'policy': return policy(option);
     case 'logout': return logout();
+    case 'tunnel': return tunnelCommands.tunnelCommand(option, rest);
     default:
-      process.stdout.write(`Usage: ${CLI_NAME} <login|run|status|check|policy|logout>\n`);
+      process.stdout.write(`Usage: ${CLI_NAME} <login|run|status|check|policy|logout|tunnel>\n`);
       process.exitCode = command === 'help' ? 0 : 2;
       return undefined;
   }
@@ -746,7 +865,7 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  main(process.argv[2] || 'help', process.argv[3]).catch((error) => {
+  main(process.argv[2] || 'help', process.argv[3], ...process.argv.slice(4)).catch((error) => {
     console.error(`${CLI_NAME}: ${describeError(error)}`);
     process.exitCode = 1;
   });
@@ -768,4 +887,6 @@ export {
   tokenExpiresSoon,
   syncMachinePolicy,
   validatedServiceUrl,
+  tunnelCommands,
+  startInProcessTunnel,
 };
